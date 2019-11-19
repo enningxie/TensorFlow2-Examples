@@ -8,10 +8,16 @@ Output: "596"
 import tensorflow as tf
 import numpy as np
 from argparse import Namespace
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
-args = Namespace(
+# 指定GPU并配置GPU
+PHYSICAL_DEVICES = tf.config.experimental.list_physical_devices('GPU')
+if PHYSICAL_DEVICES:
+    USED_GPUS = PHYSICAL_DEVICES[:1]
+    tf.config.experimental.set_visible_devices(devices=USED_GPUS, device_type='GPU')
+    for tmp_gpu in USED_GPUS:
+        tf.config.experimental.set_memory_growth(device=tmp_gpu, enable=True)
+
+ARGS = Namespace(
     # colors
     ok='\033[92m',
     fail='\033[91m',
@@ -30,7 +36,8 @@ args = Namespace(
     layers=1,
     epochs=200,
     learning_rate=0.001,
-    model_path='./addition_rnn.h5'
+    model_path='./addition_rnn.h5',
+    model_dir_path='/Data/xen/Codes/SoucheLab/TensorFlow2-Examples/examples/saved_models'
 )
 
 
@@ -78,7 +85,7 @@ class CharacterTable(object):
 class DataLoader(object):
     def __init__(self):
         # All the numbers, plus sign and space for padding.
-        self.ctable = CharacterTable(args.chars)
+        self.ctable = CharacterTable(ARGS.chars)
         self.questions, self.expected = self.gen_data()
         self.train_data, self.val_data = self.vectorization()
 
@@ -87,9 +94,9 @@ class DataLoader(object):
         expected = []
         seen = set()
         print('Generating data...')
-        while len(questions) < args.training_size:
+        while len(questions) < ARGS.training_size:
             f = lambda: int(''.join(np.random.choice(list('0123456789'))
-                                    for i in range(np.random.randint(1, args.digits + 1))))
+                                    for i in range(np.random.randint(1, ARGS.digits + 1))))
             a, b = f(), f()
             # Skip any addition questions we've already seen
             # Also skip any such that x+Y == Y+x (hence the sorting).
@@ -99,11 +106,11 @@ class DataLoader(object):
             seen.add(key)
             # Pad the data with spaces such that it is always MAXLEN.
             q = '{}+{}'.format(a, b)
-            query = q + ' ' * (args.maxlen - len(q))
+            query = q + ' ' * (ARGS.maxlen - len(q))
             ans = str(a + b)
             # Answers can be of maximum size DIGITS + 1.
-            ans += ' ' * (args.digits + 1 - len(ans))
-            if args.reverse:
+            ans += ' ' * (ARGS.digits + 1 - len(ans))
+            if ARGS.reverse:
                 # Reverse the query, e.g., '12+345  ' becomes '  543+21'. (Note the
                 # space used for padding.)
                 query = query[::-1]
@@ -114,12 +121,12 @@ class DataLoader(object):
 
     def vectorization(self):
         print('Vectorization...')
-        x = np.zeros((len(self.questions), args.maxlen, len(args.chars)), dtype=np.float)
-        y = np.zeros((len(self.questions), args.digits + 1, len(args.chars)), dtype=np.float)
+        x = np.zeros((len(self.questions), ARGS.maxlen, len(ARGS.chars)), dtype=np.float)
+        y = np.zeros((len(self.questions), ARGS.digits + 1, len(ARGS.chars)), dtype=np.float)
         for i, sentence in enumerate(self.questions):
-            x[i] = self.ctable.encode(sentence, args.maxlen)
+            x[i] = self.ctable.encode(sentence, ARGS.maxlen)
         for i, sentence in enumerate(self.expected):
-            y[i] = self.ctable.encode(sentence, args.digits + 1)
+            y[i] = self.ctable.encode(sentence, ARGS.digits + 1)
         # Shuffle (x, y) in unison as the later parts of x will almost all be larger
         # digits.
         indices = np.arange(len(y))
@@ -145,35 +152,35 @@ class DataLoader(object):
 class AdditionRNN(object):
     def __init__(self):
         self.model = self.create_model()
-        self.dataloader = DataLoader()
+        self.data_loader = DataLoader()
 
     def create_model(self):
-        inputs = tf.keras.layers.Input(shape=(args.maxlen, len(args.chars)))
-        x = tf.keras.layers.LSTM(args.hidden_size)(inputs)
-        x = tf.keras.layers.RepeatVector(args.digits + 1)(x)
-        for _ in range(args.layers):
+        inputs = tf.keras.layers.Input(shape=(ARGS.maxlen, len(ARGS.chars)))
+        x = tf.keras.layers.LSTM(ARGS.hidden_size)(inputs)
+        x = tf.keras.layers.RepeatVector(ARGS.digits + 1)(x)
+        for _ in range(ARGS.layers):
             # By setting return_sequences to True, return not only the last output but
             # all the outputs so far in the form of (num_samples, timesteps,
             # output_dim). This is necessary as TimeDistributed in the below expects
             # the first dimension to be the timesteps.
-            x = tf.keras.layers.LSTM(args.hidden_size, return_sequences=True)(x)
+            x = tf.keras.layers.LSTM(ARGS.hidden_size, return_sequences=True)(x)
         # Apply a dense layer to the every temporal slice of an input. For each of step
         # of the output sequence, decide which character should be chosen.
-        outputs = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(len(args.chars), activation='softmax'))(x)
+        outputs = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(len(ARGS.chars), activation='softmax'))(x)
         return tf.keras.models.Model(inputs=inputs, outputs=outputs)
 
     def get_dataset(self, data, is_training=False, return_steps=False):
         x_data, y_data = data
         tmp_dataset = tf.data.Dataset.from_tensor_slices((x_data, y_data))
         if is_training:
-            tmp_dataset = tmp_dataset.shuffle(buffer_size=1024).batch(args.batch_size)
+            tmp_dataset = tmp_dataset.shuffle(buffer_size=1024).batch(ARGS.batch_size)
         else:
-            tmp_dataset = tmp_dataset.batch(args.batch_size)
+            tmp_dataset = tmp_dataset.batch(ARGS.batch_size)
         if return_steps:
-            if x_data.shape[0] % args.batch_size == 0:
-                tmp_steps = x_data.shape[0] // args.batch_size
+            if x_data.shape[0] % ARGS.batch_size == 0:
+                tmp_steps = x_data.shape[0] // ARGS.batch_size
             else:
-                tmp_steps = x_data.shape[0] // args.batch_size + 1
+                tmp_steps = x_data.shape[0] // ARGS.batch_size + 1
             return tmp_dataset, tmp_steps
         else:
             return tmp_dataset
@@ -181,7 +188,7 @@ class AdditionRNN(object):
     # custom training loop
     def train(self):
         # instantiate an optimizer to train the model.
-        optimizer = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
+        optimizer = tf.keras.optimizers.Adam(learning_rate=ARGS.learning_rate)
         # instantiate a loss function.
         loss_fn = tf.keras.losses.CategoricalCrossentropy(from_logits=False)
         # prepare the metrics.
@@ -189,14 +196,14 @@ class AdditionRNN(object):
         val_acc_metric = tf.keras.metrics.CategoricalAccuracy()
 
         # prepare the training dataset.
-        train_dataset, train_steps = self.get_dataset(self.dataloader.train_data, is_training=True, return_steps=True)
+        train_dataset, train_steps = self.get_dataset(self.data_loader.train_data, is_training=True, return_steps=True)
 
         # Prepare the validation dataset.
-        val_dataset, val_steps = self.get_dataset(self.dataloader.val_data, return_steps=True)
+        val_dataset, val_steps = self.get_dataset(self.data_loader.val_data, return_steps=True)
 
         # Iterate over epochs.
         best_val_acc = 0.
-        for epoch in range(args.epochs):
+        for epoch in range(ARGS.epochs):
             print('*********************')
             print('Epoch {} training...'.format(epoch))
             training_bar = tf.keras.utils.Progbar(train_steps, stateful_metrics=['loss', 'acc'])
@@ -230,16 +237,19 @@ class AdditionRNN(object):
             # Save the best model with the highest verification accuracy
             if val_acc > best_val_acc:
                 print('model saving...')
-                # todo
-                self.model.save_weights(args.model_path)
+                # todo tf.saved_model.save
+                # normal
+                self.model.save_weights(ARGS.model_path)
+                # # new
+                # tf.saved_model.save(self.model, ARGS.model_dir_path)
                 best_val_acc = val_acc
             val_acc_metric.reset_states()
 
     def evaluate(self):
         # Select 10 samples from the validation set at random so we can visualize
         # errors.
-        self.model.load_weights(args.model_path)
-        x_val, y_val = self.dataloader.val_data
+        self.model.load_weights(ARGS.model_path)
+        x_val, y_val = self.data_loader.val_data
         for i in range(10):
             ind = np.random.randint(0, len(x_val))
             rowx, rowy = x_val[np.array([ind])], y_val[np.array([ind])]
@@ -249,15 +259,15 @@ class AdditionRNN(object):
                 preds = preds.argmax(axis=-1)
             else:
                 preds = (preds > 0.5).astype('int32')
-            q = self.dataloader.ctable.decode(rowx[0])
-            correct = self.dataloader.ctable.decode(rowy[0])
-            guess = self.dataloader.ctable.decode(preds[0], calc_argmax=False)
-            print('Q', q[::-1] if args.reverse else q, end=' ')
+            q = self.data_loader.ctable.decode(rowx[0])
+            correct = self.data_loader.ctable.decode(rowy[0])
+            guess = self.data_loader.ctable.decode(preds[0], calc_argmax=False)
+            print('Q', q[::-1] if ARGS.reverse else q, end=' ')
             print('T', correct, end=' ')
             if correct == guess:
-                print(args.ok + '☑' + args.close, end=' ')
+                print(ARGS.ok + '☑' + ARGS.close, end=' ')
             else:
-                print(args.fail + '☒' + args.close, end=' ')
+                print(ARGS.fail + '☒' + ARGS.close, end=' ')
             print(guess)
 
 
